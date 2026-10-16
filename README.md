@@ -14,13 +14,22 @@ Requires Python 3.11 or newer.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-Set `LLM_API_KEY` in `.env` to a newly issued NVIDIA API key. Do not commit
-`.env`, service-account credentials, or keys. The LLM settings default to
-NVIDIA's OpenAI-compatible endpoint and `openai/gpt-oss-20b`; provider settings
-can be overridden with `LLM_BASE_URL` and `LLM_MODEL`.
+Configure NVIDIA's hosted GPT-OSS-20B in `.env`:
+
+```dotenv
+LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+LLM_MODEL=openai/gpt-oss-20b
+LLM_API_KEY=YOUR_NVIDIA_API_KEY
+```
+
+Replace `YOUR_NVIDIA_API_KEY` with your NVIDIA API key. `LLM_API_KEY` is
+required; the application reports a clear error if it is missing. Do not commit
+`.env`, service-account credentials, or keys. `.env` is Git-ignored. Keep the
+NVIDIA base URL and model ID unchanged unless intentionally configuring a
+different compatible endpoint.
 
 Seed five simulated participants and sample tasks:
 

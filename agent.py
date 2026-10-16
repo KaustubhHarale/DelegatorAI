@@ -53,8 +53,10 @@ class OpenAICompatibleProvider:
             temperature=0.2,
             max_tokens=900,
         )
+        if not completion.choices:
+            raise ValueError("The LLM returned no interpretation choices.")
         content = completion.choices[0].message.content
-        if not content:
+        if not isinstance(content, str) or not content.strip():
             raise ValueError("The LLM returned an empty interpretation.")
         return content
 

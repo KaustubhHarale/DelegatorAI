@@ -23,7 +23,8 @@ def get_llm_settings() -> LLMSettings:
     api_key = os.environ.get("LLM_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
-            "LLM_API_KEY is not configured. Set it in the environment or .env file."
+            "LLM_API_KEY is not configured. Set it to an NVIDIA API key "
+            "in the environment or .env file."
         )
     return LLMSettings(
         api_key=api_key,

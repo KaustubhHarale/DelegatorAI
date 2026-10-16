@@ -1,9 +1,17 @@
 import json
 from datetime import date
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
-from agent import interpret_and_record_reply, interpret_reply
+from agent import (
+    OpenAICompatibleProvider,
+    interpret_and_record_reply,
+    interpret_reply,
+)
+from config import LLMSettings
 from database import add_participant, add_task, connect, get_task, init_db
 from models import (
     InterpretationKind,
@@ -30,6 +38,86 @@ class FakeProvider:
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         return json.dumps(self.result)
+
+
+class TimeoutProvider:
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        self.prompts = (system_prompt, user_prompt)
+        raise TimeoutError("NVIDIA API request timed out.")
+
+
+class MalformedProvider:
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        self.prompts = (system_prompt, user_prompt)
+        return "{malformed json"
+
+
+def test_openai_compatible_provider_uses_nvidia_settings(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["request"] = kwargs
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content='{"interpretation":"progress"}')
+                    )
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, *, base_url: str, api_key: str) -> None:
+            captured["client"] = {"base_url": base_url, "api_key": api_key}
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(
+        "agent.get_llm_settings",
+        lambda: LLMSettings(
+            api_key="test-nvidia-key",
+            base_url="https://integrate.api.nvidia.com/v1",
+            model="openai/gpt-oss-20b",
+        ),
+    )
+    monkeypatch.setattr("agent.OpenAI", FakeOpenAI)
+
+    provider = OpenAICompatibleProvider()
+    result = provider.complete("system prompt", "user prompt")
+
+    assert result == '{"interpretation":"progress"}'
+    assert captured["client"] == {
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "test-nvidia-key",
+    }
+    assert captured["request"]["model"] == "openai/gpt-oss-20b"
+
+
+def test_openai_compatible_provider_rejects_empty_choices(monkeypatch):
+    class FakeCompletions:
+        def create(self, **kwargs):
+            assert kwargs["model"] == "openai/gpt-oss-20b"
+            return SimpleNamespace(choices=[])
+
+    class FakeOpenAI:
+        def __init__(self, *, base_url: str, api_key: str) -> None:
+            assert base_url == "https://integrate.api.nvidia.com/v1"
+            assert api_key == "test-nvidia-key"
+            self.chat = SimpleNamespace(
+                completions=FakeCompletions()
+            )
+
+    monkeypatch.setattr(
+        "agent.get_llm_settings",
+        lambda: LLMSettings(
+            api_key="test-nvidia-key",
+            base_url="https://integrate.api.nvidia.com/v1",
+            model="openai/gpt-oss-20b",
+        ),
+    )
+    monkeypatch.setattr("agent.OpenAI", FakeOpenAI)
+
+    with pytest.raises(ValueError, match="no interpretation choices"):
+        OpenAICompatibleProvider().complete("system prompt", "user prompt")
 
 
 @pytest.fixture
@@ -191,6 +279,36 @@ def test_ambiguous_reply_is_stored_without_changing_task_or_audit(seeded_databas
         ).fetchone()[0]
     assert message_count == 1
     assert history_count == 0
+
+
+@pytest.mark.parametrize(
+    ("provider", "error"),
+    [
+        (TimeoutProvider(), TimeoutError),
+        (MalformedProvider(), ValidationError),
+    ],
+)
+def test_provider_failures_do_not_record_replies(seeded_database, provider, error):
+    with pytest.raises(error):
+        interpret_and_record_reply(
+            task_id="payment",
+            participant_id="kabir",
+            reply="I started.",
+            event_id="failed-event",
+            provider=provider,
+            database_path=str(seeded_database),
+        )
+
+    task = get_task("payment", seeded_database)
+    assert task is not None
+    assert task.status == TaskStatus.PENDING
+    with connect(seeded_database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM messages WHERE event_id = 'failed-event'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM status_history WHERE task_id = 'payment'"
+        ).fetchone()[0] == 0
 
 
 def test_reply_is_persisted_with_status_audit(seeded_database):
