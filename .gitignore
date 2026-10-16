@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 .venv/
 .env
 google-service-account*.json
@@ -10,3 +11,9 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+=======
+node_modules/
+dist/
+.env
+.vite/
+>>>>>>> frontend
