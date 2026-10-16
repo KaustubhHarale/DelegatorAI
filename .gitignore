@@ -1,5 +1,4 @@
 .venv/
-.env
 google-service-account*.json
 *service-account*.json
 *service_account*.json
@@ -10,3 +9,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+node_modules/
+dist/
+.env
+.vite/

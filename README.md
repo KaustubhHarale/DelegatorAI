@@ -3,8 +3,8 @@
 DelegatorAI coordinates college project tasks. The foundation and AI milestones
 provide a FastAPI service, SQLite persistence, structured reply interpretation,
 validated task updates, and an audit trail. The Google Chat milestone adds
-authenticated HTTP events and Chat API messaging. The Streamlit dashboard remains
-for a later milestone.
+authenticated HTTP events and Chat API messaging. A React + Vite dashboard
+prototype is included in `src/`.
 
 ## Local setup
 
@@ -200,3 +200,35 @@ The tests verify persistence, status rules, reply matching, ownership checks,
 event idempotency, and the HTTP endpoint's authentication guard. They do not
 prove that a Google Cloud project, Chat app, API key, or service account is
 configured, and they do not send a live Chat message.
+
+## Run the frontend
+
+Requires Node.js 18 or newer (Node.js 20 or newer is recommended).
+
+Install dependencies and start the React + Vite dashboard:
+
+```powershell
+npm install
+npm run dev
+```
+
+## Backend connection
+
+The frontend uses `VITE_API_BASE_URL` from `.env`, defaulting to
+`http://localhost:8000`. The dashboard currently expects these endpoints:
+
+- `GET /tasks`
+- `POST /tasks`
+- `PATCH /tasks/{id}`
+- `GET /tasks/{id}/history` (declared in the API helper for later use)
+- `POST /tasks/{id}/follow-up` (declared in the API helper for later use)
+
+Copy `.env.example` to `.env` if needed, then set `VITE_API_BASE_URL` to your
+backend URL. Do not put API keys or other secrets in `VITE_*` variables: Vite
+exposes those values to browser code. Keep NVIDIA and Google Chat credentials
+in the backend environment only.
+
+The dashboard remains usable with sample demo data if the backend is
+unavailable. It does not send Google Chat messages or call the LLM provider
+directly. The API response adapter is in `src/App.jsx` (`normalizeTask`); request
+helpers are in `src/api.js`.
