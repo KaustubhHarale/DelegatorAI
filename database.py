@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from config import get_database_path
-from models import Participant, Task, TaskStatus
+from models import Participant, Task, TaskPriority, TaskStatus
 
 
 SCHEMA = """
@@ -25,7 +25,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     completion_criteria TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'Pending'
         CHECK (status IN ('Pending', 'In Progress', 'Blocked', 'Complete')),
+    priority TEXT NOT NULL DEFAULT 'Medium'
+        CHECK (priority IN ('Low', 'Medium', 'High')),
     blocker TEXT,
+    progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
     last_follow_up_at TEXT
 );
 
@@ -84,6 +87,32 @@ def connect(database_path: Path | str | None = None) -> Iterator[sqlite3.Connect
 def init_db(database_path: Path | str | None = None) -> None:
     with connect(database_path) as connection:
         connection.executescript(SCHEMA)
+        task_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(tasks)")
+        }
+        if "priority" not in task_columns:
+            connection.execute(
+                """
+                ALTER TABLE tasks
+                ADD COLUMN priority TEXT NOT NULL DEFAULT 'Medium'
+                CHECK (priority IN ('Low', 'Medium', 'High'))
+                """
+            )
+        if "progress" not in task_columns:
+            connection.execute(
+                "ALTER TABLE tasks ADD COLUMN progress INTEGER NOT NULL DEFAULT 0"
+            )
+            connection.execute(
+                """
+                UPDATE tasks
+                SET progress = CASE status
+                    WHEN 'Complete' THEN 100
+                    WHEN 'In Progress' THEN 50
+                    WHEN 'Blocked' THEN 25
+                    ELSE 0
+                END
+                """
+            )
         columns = {
             row["name"] for row in connection.execute("PRAGMA table_info(messages)")
         }
@@ -122,9 +151,10 @@ def add_task(task: Task, database_path: Path | str | None = None) -> None:
             """
             INSERT INTO tasks (
                 id, project_id, title, owner_id, deadline,
-                completion_criteria, status, blocker, last_follow_up_at
+                completion_criteria, status, priority, blocker, progress,
+                last_follow_up_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task.id,
@@ -134,7 +164,9 @@ def add_task(task: Task, database_path: Path | str | None = None) -> None:
                 task.deadline.isoformat(),
                 task.completion_criteria,
                 task.status.value,
+                task.priority.value,
                 task.blocker,
+                task.progress,
                 task.last_follow_up_at.isoformat()
                 if task.last_follow_up_at is not None
                 else None,
@@ -175,6 +207,36 @@ def list_project_tasks(
             (project_id,),
         ).fetchall()
     return [_task_from_row(row) for row in rows]
+
+
+def list_task_history(
+    task_id: str, database_path: Path | str | None = None
+) -> list[sqlite3.Row]:
+    with connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT record_type, id, created_at, old_status, new_status,
+                   reason, direction, text, chat_message_name, chat_thread_name
+            FROM (
+                SELECT
+                    'status' AS record_type, id, created_at, old_status,
+                    new_status, reason, NULL AS direction, NULL AS text,
+                    NULL AS chat_message_name, NULL AS chat_thread_name
+                FROM status_history
+                WHERE task_id = ?
+                UNION ALL
+                SELECT
+                    'message' AS record_type, id, created_at, NULL AS old_status,
+                    NULL AS new_status, NULL AS reason, direction, text,
+                    chat_message_name, chat_thread_name
+                FROM messages
+                WHERE task_id = ?
+            )
+            ORDER BY created_at DESC, id DESC
+            """,
+            (task_id, task_id),
+        ).fetchall()
+    return rows
 
 
 def save_outbound_chat_message(
@@ -255,7 +317,9 @@ def _task_from_row(row: sqlite3.Row) -> Task:
         deadline=date.fromisoformat(row["deadline"]),
         completion_criteria=row["completion_criteria"],
         status=TaskStatus(row["status"]),
+        priority=TaskPriority(row["priority"]),
         blocker=row["blocker"],
+        progress=row["progress"],
         last_follow_up_at=datetime.fromisoformat(row["last_follow_up_at"])
         if row["last_follow_up_at"] is not None
         else None,

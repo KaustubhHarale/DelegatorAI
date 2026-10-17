@@ -1,10 +1,10 @@
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from database import connect, get_task as load_task, list_project_tasks as load_project_tasks
-from models import Task, TaskInterpretation, TaskStatus
+from models import Task, TaskInterpretation, TaskPriority, TaskStatus
 
 
 ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
@@ -172,8 +172,15 @@ def record_progress(
             else None
         )
         connection.execute(
-            "UPDATE tasks SET status = ?, blocker = ? WHERE id = ?",
-            (interpretation.proposed_status.value, new_blocker, task_id),
+            "UPDATE tasks SET status = ?, blocker = ?, progress = ? WHERE id = ?",
+            (
+                interpretation.proposed_status.value,
+                new_blocker,
+                _progress_for_status(
+                    interpretation.proposed_status, task.progress
+                ),
+                task_id,
+            ),
         )
         if task.status != interpretation.proposed_status:
             connection.execute(
@@ -223,11 +230,16 @@ def set_task_status(
         if new_status == TaskStatus.BLOCKED and not (blocker or task.blocker):
             raise ValueError("Blocked status requires a specific blocker.")
         updated_blocker = blocker if blocker is not None else task.blocker
-        if new_status != TaskStatus.BLOCKED:
+        if new_status != task.status and new_status != TaskStatus.BLOCKED:
             updated_blocker = None
         connection.execute(
-            "UPDATE tasks SET status = ?, blocker = ? WHERE id = ?",
-            (new_status.value, updated_blocker, task_id),
+            "UPDATE tasks SET status = ?, blocker = ?, progress = ? WHERE id = ?",
+            (
+                new_status.value,
+                updated_blocker,
+                _progress_for_status(new_status, task.progress),
+                task_id,
+            ),
         )
         if task.status != new_status:
             connection.execute(
@@ -242,6 +254,93 @@ def set_task_status(
                     task.status.value,
                     new_status.value,
                     reason,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+    return get_task(task_id, database_path)
+
+
+def update_task_from_dashboard(
+    *,
+    task_id: str,
+    title: str | None = None,
+    deadline: date | None = None,
+    completion_criteria: str | None = None,
+    priority: TaskPriority | None = None,
+    new_status: TaskStatus | None = None,
+    blocker: str | None = None,
+    progress: int | None = None,
+    completion_confirmed: bool = False,
+    database_path: Path | str | None = None,
+) -> Task:
+    with connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            raise TaskNotFoundError(f"Task {task_id!r} does not exist.")
+        task = Task.model_validate(_task_row_dict(row))
+        status = new_status or task.status
+        if status not in ALLOWED_TRANSITIONS[task.status]:
+            raise InvalidStatusTransitionError(
+                f"Cannot change status from {task.status.value} to {status.value}."
+            )
+        if (
+            status == TaskStatus.COMPLETE
+            and task.status != TaskStatus.COMPLETE
+            and not completion_confirmed
+        ):
+            raise ValueError("Complete status requires explicit completion confirmation.")
+
+        updated_blocker = blocker if blocker is not None else task.blocker
+        if status == TaskStatus.BLOCKED and not (
+            updated_blocker and updated_blocker.strip()
+        ):
+            raise ValueError("Blocked status requires a specific blocker.")
+        if status != task.status and status != TaskStatus.BLOCKED:
+            updated_blocker = None
+
+        updated_progress = (
+            progress if progress is not None else _progress_for_status(status, task.progress)
+        )
+        if status == TaskStatus.COMPLETE:
+            updated_progress = 100
+        elif status == TaskStatus.PENDING:
+            updated_progress = 0
+
+        connection.execute(
+            """
+            UPDATE tasks
+            SET title = ?, deadline = ?, completion_criteria = ?,
+                priority = ?, status = ?, blocker = ?, progress = ?
+            WHERE id = ?
+            """,
+            (
+                title if title is not None else task.title,
+                deadline.isoformat() if deadline is not None else task.deadline.isoformat(),
+                completion_criteria
+                if completion_criteria is not None
+                else task.completion_criteria,
+                (priority or task.priority).value,
+                status.value,
+                updated_blocker,
+                updated_progress,
+                task_id,
+            ),
+        )
+        if task.status != status:
+            connection.execute(
+                """
+                INSERT INTO status_history (
+                    task_id, old_status, new_status, reason,
+                    source_message_id, created_at
+                ) VALUES (?, ?, ?, ?, NULL, ?)
+                """,
+                (
+                    task_id,
+                    task.status.value,
+                    status.value,
+                    "Updated from the DelegatorAI dashboard.",
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
@@ -279,6 +378,18 @@ def _task_row_dict(row: sqlite3.Row) -> dict[str, object]:
         "deadline": row["deadline"],
         "completion_criteria": row["completion_criteria"],
         "status": row["status"],
+        "priority": row["priority"],
         "blocker": row["blocker"],
+        "progress": row["progress"],
         "last_follow_up_at": row["last_follow_up_at"],
     }
+
+
+def _progress_for_status(status: TaskStatus, current_progress: int) -> int:
+    if status == TaskStatus.COMPLETE:
+        return 100
+    if status == TaskStatus.PENDING:
+        return 0
+    if current_progress == 0 and status == TaskStatus.IN_PROGRESS:
+        return 50
+    return current_progress

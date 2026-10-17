@@ -215,13 +215,17 @@ npm run dev
 ## Backend connection
 
 The frontend uses `VITE_API_BASE_URL` from `.env`, defaulting to
-`http://localhost:8000`. The dashboard currently expects these endpoints:
+`http://localhost:8000`. Run the backend and frontend in separate terminals.
+The backend allows Vite's local development origins by default; set
+`FRONTEND_ORIGINS` to a comma-separated list to use other origins. The dashboard
+uses these endpoints:
 
+- `GET /participants`
 - `GET /tasks`
 - `POST /tasks`
 - `PATCH /tasks/{id}`
-- `GET /tasks/{id}/history` (declared in the API helper for later use)
-- `POST /tasks/{id}/follow-up` (declared in the API helper for later use)
+- `GET /tasks/{id}/history` (persisted message and status-history entries)
+- `POST /tasks/{id}/follow-up` (sends and records a Google Chat message)
 
 Copy `.env.example` to `.env` if needed, then set `VITE_API_BASE_URL` to your
 backend URL. Do not put API keys or other secrets in `VITE_*` variables: Vite
@@ -230,5 +234,7 @@ in the backend environment only.
 
 The dashboard remains usable with sample demo data if the backend is
 unavailable. It does not send Google Chat messages or call the LLM provider
-directly. The API response adapter is in `src/App.jsx` (`normalizeTask`); request
-helpers are in `src/api.js`.
+directly. Live follow-ups require valid Google Chat configuration, credentials,
+a configured project space, and an owner with a Google Chat user ID. The API
+response adapter is in `src/App.jsx` (`normalizeTask`); request helpers are in
+`src/api.js`.

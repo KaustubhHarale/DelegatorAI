@@ -43,7 +43,7 @@ const statusMeta = {
   "Blocked": { className: "blocked", icon: AlertCircle },
   "Completed": { className: "completed", icon: CircleCheck },
 };
-const people = [
+const initialPeople = [
   { name: "Aditi Sharma", initials: "AS", role: "Project Lead", tasks: 2, color: "purple", email: "aditi@campusconnect.dev" },
   { name: "Kabir Mehta", initials: "KM", role: "Backend Developer", tasks: 2, color: "blue", email: "kabir@campusconnect.dev" },
   { name: "Riya Sharma", initials: "RS", role: "Frontend Developer", tasks: 2, color: "pink", email: "riya@campusconnect.dev" },
@@ -99,6 +99,7 @@ if (typeof document !== "undefined") document.documentElement.dataset.theme = in
 export default function App() {
   const [page, setPage] = useState("Overview");
   const [tasks, setTasks] = useState(initialTasks);
+  const [people, setPeople] = useState(initialPeople);
   const [activity, setActivity] = useState(initialActivity);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All statuses");
@@ -112,7 +113,7 @@ export default function App() {
   const [apiState, setApiState] = useState("demo");
   const [accessMode, setAccessMode] = useState(null);
   const [theme, setTheme] = useState(initialTheme);
-  const [newTask, setNewTask] = useState({ title: "", description: "", assignee: "Riya Sharma", priority: "Medium", dueDate: "2026-10-22" });
+  const [newTask, setNewTask] = useState({ title: "", description: "", assignee: "", priority: "Medium", dueDate: "2026-10-22" });
 
   const completed = tasks.filter(t => t.status === "Completed").length;
   const blocked = tasks.filter(t => t.status === "Blocked").length;
@@ -130,11 +131,24 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
-    api.getTasks().then((data) => {
-      if (!alive || !Array.isArray(data) || data.length === 0) return;
-      setTasks(data.map(normalizeTask));
+    Promise.all([api.getTasks(), api.getParticipants()]).then(async ([taskData, participantData]) => {
+      if (!alive) return;
+      if (!Array.isArray(taskData) || !Array.isArray(participantData)) {
+        throw new Error("Backend returned an invalid task or participant list.");
+      }
+      const histories = await Promise.all(
+        taskData.map(task => api.getTaskHistory(task.id))
+      );
+      if (histories.some(history => !Array.isArray(history))) {
+        throw new Error("Backend returned an invalid task history.");
+      }
+      const nextPeople = participantData.map(normalizeParticipant);
+      setTasks(taskData.map(normalizeTask));
+      setPeople(nextPeople);
+      setActivity(histories.flat().sort((a, b) => Date.parse(b.time) - Date.parse(a.time)));
+      setNewTask(current => ({ ...current, assignee: nextPeople[0]?.id || "" }));
       setApiState("connected");
-    }).catch(() => { if (alive) setApiState("demo"); });
+    }).catch(() => { if (alive) setApiState("offline"); });
     return () => { alive = false; };
   }, []);
 
@@ -158,36 +172,61 @@ export default function App() {
   function addActivity(title, detail, kind = "update") {
     setActivity(prev => [{ id: Date.now(), title, detail, time: "Just now", kind }, ...prev]);
   }
-  function updateTask(id, patch) {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
+  async function updateTask(id, patch) {
     const current = tasks.find(t => t.id === id);
-    if (current) {
+    if (!current) return;
+    try {
+      const updated = apiState === "connected"
+        ? normalizeTask(await api.updateTask(id, patch))
+        : { ...current, ...patch };
+      setTasks(prev => prev.map(t => t.id === id ? updated : t));
       addActivity("Task updated", `“${current.title}” was updated.`, patch.status === "Completed" ? "success" : "update");
-      api.updateTask(id, patch).catch(() => {});
+      setSelectedTask(updated);
+      setToast(apiState === "connected" ? "Task saved to backend" : "Task updated in demo");
+    } catch (error) {
+      setToast(`Could not save task: ${error.message}`);
     }
-    setSelectedTask(current ? { ...current, ...patch } : null);
-    setToast("Task updated");
   }
   async function createTask(e) {
     e.preventDefault();
     if (!newTask.title.trim()) return;
-    const person = people.find(p => p.name === newTask.assignee) || people[2];
-    const localTask = {
-      id: `T-${Math.floor(100 + Math.random() * 900)}`, title: newTask.title.trim(),
-      description: newTask.description.trim() || "No description added yet.", assignee: person.name,
-      initials: person.initials, role: person.role, status: "Pending", priority: newTask.priority,
-      dueDate: new Date(`${newTask.dueDate}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      progress: 0, project: "CampusConnect", updated: "Just now", blocker: ""
-    };
-    setTasks(prev => [localTask, ...prev]);
-    addActivity("New task created", `“${localTask.title}” assigned to ${person.name}.`, "success");
-    setShowCreate(false);
-    setNewTask({ title: "", description: "", assignee: "Riya Sharma", priority: "Medium", dueDate: "2026-10-22" });
-    setToast("Task created");
+    const person = people.find(p => p.id === newTask.assignee) || (apiState === "connected" ? null : initialPeople[2]);
+    if (!person) {
+      setToast("Add participants to the backend before assigning a task.");
+      return;
+    }
     try {
-      await api.createTask({ title: localTask.title, description: localTask.description, assignee: localTask.assignee, status: "PENDING", priority: localTask.priority, due_date: newTask.dueDate });
-      setApiState("connected");
-    } catch { /* Local demo state remains usable until backend is configured. */ }
+      const created = apiState === "connected"
+        ? normalizeTask(await api.createTask({
+          title: newTask.title.trim(),
+          project_id: "college-app",
+          owner_id: person.id,
+          deadline: newTask.dueDate,
+          description: newTask.description.trim(),
+          priority: newTask.priority,
+        }))
+        : normalizeTask({
+          id: `T-${Math.floor(100 + Math.random() * 900)}`,
+          title: newTask.title.trim(),
+          description: newTask.description.trim() || "No description added yet.",
+          assignee: person.name,
+          owner_id: person.id,
+          status: "Pending",
+          priority: newTask.priority,
+          dueDate: new Date(`${newTask.dueDate}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+          progress: 0,
+          project: "CampusConnect",
+          updated: "Just now",
+          blocker: "",
+        });
+      setTasks(prev => [created, ...prev]);
+      addActivity("New task created", `“${created.title}” assigned to ${person.name}.`, "success");
+      setShowCreate(false);
+      setNewTask({ title: "", description: "", assignee: people[0]?.id || "", priority: "Medium", dueDate: "2026-10-22" });
+      setToast(apiState === "connected" ? "Task created in backend" : "Task created in demo");
+    } catch (error) {
+      setToast(`Could not create task: ${error.message}`);
+    }
   }
 
   const filteredTasks = useMemo(() => tasks.filter(t => {
@@ -247,7 +286,7 @@ export default function App() {
       <header className="topbar">
         <div className="breadcrumbs"><button className="mobile-menu icon-btn" onClick={() => setMobileNav(true)} aria-label="Open navigation menu" aria-expanded={mobileNav}><Menu size={20} aria-hidden="true" /></button><span>Workspace</span><ChevronRight size={14} aria-hidden="true" /><strong>{page}</strong></div>
         <div className="topbar-actions">
-          <div className="connection-indicator"><span className={`online-dot ${apiState !== "connected" ? "offline" : ""}`} />{apiState === "connected" ? "Backend connected" : "Demo mode"}</div>
+          <div className="connection-indicator"><span className={`online-dot ${apiState !== "connected" ? "offline" : ""}`} />{apiState === "connected" ? "Backend connected" : apiState === "offline" ? "Backend unavailable · demo data" : "Demo mode"}</div>
           <button className="icon-btn search-toggle" onClick={() => document.getElementById("global-search")?.focus()} aria-label="Search"><Search size={18} aria-hidden="true" /></button>
           <button className="icon-btn notification-btn" onClick={() => setShowNotifications(v => !v)} aria-label="Notifications" aria-expanded={showNotifications}><Bell size={18} aria-hidden="true" /><i aria-hidden="true" /></button>
           <button className="topbar-avatar" onClick={() => setShowProfile(v => !v)} aria-label="Open Aditi Sharma profile menu" aria-expanded={showProfile}><Avatar initials="AS" color="purple" size="small" /></button>
@@ -260,11 +299,11 @@ export default function App() {
           <div className="title-actions">{page !== "Settings" && <button className="button button-secondary" onClick={() => setToast("Workspace data is up to date.")}><RefreshCw size={15}/> Refresh</button>}{["Overview","Projects","My Tasks"].includes(page) && <button className="button button-primary" onClick={() => setShowCreate(true)}><Plus size={16}/> New task</button>}</div>
         } />
 
-        {page === "Overview" && <Overview tasks={tasks} activity={activity} completed={completed} blocked={blocked} inProgress={inProgress} completion={completion} setPage={setPage} setSelectedTask={setSelectedTask} setShowCreate={setShowCreate} aiEnabled={aiEnabled} />}
-        {page === "Projects" && <Projects tasks={tasks} setPage={setPage} setSelectedTask={setSelectedTask} setShowCreate={setShowCreate} />}
-        {page === "My Tasks" && <TaskWorkspace tasks={filteredTasks.filter(t => ["Aditi Sharma","Riya Sharma"].includes(t.assignee))} setSelectedTask={setSelectedTask} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} />}
-        {page === "Team Members" && <TeamMembers tasks={tasks} />}
-        {page === "AI Coordinator" && <Coordinator tasks={tasks} activity={activity} enabled={aiEnabled} setEnabled={setAiEnabled} setToast={setToast} addActivity={addActivity} />}
+        {page === "Overview" && <Overview tasks={tasks} people={people} activity={activity} completed={completed} blocked={blocked} inProgress={inProgress} completion={completion} setPage={setPage} setSelectedTask={setSelectedTask} setShowCreate={setShowCreate} aiEnabled={aiEnabled} />}
+        {page === "Projects" && <Projects tasks={tasks} people={people} setPage={setPage} setSelectedTask={setSelectedTask} setShowCreate={setShowCreate} />}
+        {page === "My Tasks" && <TaskWorkspace tasks={filteredTasks} setSelectedTask={setSelectedTask} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} />}
+        {page === "Team Members" && <TeamMembers tasks={tasks} people={people} />}
+        {page === "AI Coordinator" && <Coordinator tasks={tasks} activity={activity} apiState={apiState} enabled={aiEnabled} setEnabled={setAiEnabled} setToast={setToast} addActivity={addActivity} />}
         {page === "Activity Log" && <ActivityLog activity={activity} />}
         {page === "Settings" && <SettingsPage aiEnabled={aiEnabled} setAiEnabled={setAiEnabled} setToast={setToast} theme={theme} setTheme={setTheme} />}
       </div>
@@ -275,7 +314,7 @@ export default function App() {
       <div className="modal-heading"><div><div className="eyebrow">CAMPUSCONNECT</div><h2>Create a task</h2><p>Give your teammate a clear next step.</p></div><button type="button" className="icon-btn" onClick={() => setShowCreate(false)}><X size={19}/></button></div>
       <label className="field-label">Task title <span>*</span><input required autoFocus placeholder="e.g. Implement password reset flow" value={newTask.title} onChange={e => setNewTask({...newTask,title:e.target.value})}/></label>
       <label className="field-label">Description<textarea rows="3" placeholder="What needs to be done? Include acceptance criteria..." value={newTask.description} onChange={e => setNewTask({...newTask,description:e.target.value})}/></label>
-      <div className="form-grid"><label className="field-label">Assignee<select value={newTask.assignee} onChange={e => setNewTask({...newTask,assignee:e.target.value})}>{people.map(p=><option key={p.name}>{p.name}</option>)}</select></label><label className="field-label">Priority<select value={newTask.priority} onChange={e => setNewTask({...newTask,priority:e.target.value})}><option>Low</option><option>Medium</option><option>High</option></select></label></div>
+      <div className="form-grid">      <label className="field-label">Assignee<select required value={newTask.assignee} onChange={e => setNewTask({...newTask,assignee:e.target.value})}>{people.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label><label className="field-label">Priority<select value={newTask.priority} onChange={e => setNewTask({...newTask,priority:e.target.value})}><option>Low</option><option>Medium</option><option>High</option></select></label></div>
       <label className="field-label">Due date<input type="date" value={newTask.dueDate} onChange={e => setNewTask({...newTask,dueDate:e.target.value})}/></label>
       <div className="chat-preview"><div className="chat-preview-icon"><MessageCircle size={16}/></div><div><strong>Google Chat notification preview</strong><p>Hey {newTask.assignee.split(" ")[0] || "teammate"} — you’ve been assigned a new task: “{newTask.title || "Your new task"}”.</p><small>Preview only · Real messaging requires backend integration</small></div></div>
       <div className="modal-footer"><button type="button" className="button button-secondary" onClick={() => setShowCreate(false)}>Cancel</button><button type="submit" className="button button-primary"><Plus size={15}/> Create task</button></div>
@@ -285,11 +324,16 @@ export default function App() {
 }
 
 function normalizeTask(t) {
-  const statusMap = { PENDING: "Pending", IN_PROGRESS: "In Progress", BLOCKED: "Blocked", COMPLETE: "Completed", COMPLETED: "Completed" };
-  return { ...t, id: String(t.id ?? `T-${Date.now()}`), title: t.title || "Untitled task", description: t.description || "", assignee: t.assignee || t.owner || "Unassigned", initials: (t.assignee || t.owner || "U").split(" ").map(x => x[0]).join("").slice(0,2).toUpperCase(), role: t.role || "Team member", status: statusMap[t.status] || t.status || "Pending", priority: t.priority || "Medium", dueDate: t.dueDate || t.due_date || "Not set", progress: t.progress ?? 0, project: t.project || "CampusConnect", updated: t.updated || "Recently", blocker: t.blocker || "" };
+  const statusMap = { PENDING: "Pending", IN_PROGRESS: "In Progress", BLOCKED: "Blocked", COMPLETE: "Completed", COMPLETED: "Completed", Complete: "Completed" };
+  return { ...t, id: String(t.id ?? `T-${Date.now()}`), title: t.title || "Untitled task", description: t.description || "", assignee: t.assignee || t.owner || "Unassigned", initials: t.initials || (t.assignee || t.owner || "U").split(" ").map(x => x[0]).join("").slice(0,2).toUpperCase(), role: t.role || "Team member", status: statusMap[t.status] || t.status || "Pending", priority: t.priority || "Medium", dueDate: t.dueDate || t.due_date || "Not set", progress: t.progress ?? 0, project: t.project || "CampusConnect", updated: t.updated || "Recently", blocker: t.blocker || "" };
 }
 
-function Overview({ tasks, activity, completed, blocked, inProgress, completion, setPage, setSelectedTask, setShowCreate, aiEnabled }) {
+function normalizeParticipant(person) {
+  const initials = (person.name || "U").split(" ").map(part => part[0]).join("").slice(0, 2).toUpperCase();
+  return { ...person, initials, role: "Team member", color: avatarColor(initials) };
+}
+
+function Overview({ tasks, people, activity, completed, blocked, inProgress, completion, setPage, setSelectedTask, setShowCreate, aiEnabled }) {
   const pending = tasks.filter(t => t.status === "Pending").length;
   const assignedMembers = new Set(tasks.map(task => task.assignee).filter(Boolean)).size;
   const attentionTasks = [...tasks]
@@ -401,7 +445,7 @@ function ActivityItem({item}) {
   const Icon = item.kind==="success" ? Check : item.kind==="warning" ? AlertCircle : item.kind==="bot" ? Bot : Activity;
   return <div className="activity-item"><span className={`activity-icon ${item.kind}`}><Icon size={14}/></span><div className="activity-detail"><strong>{item.title}</strong><p>{item.detail}</p><small>{item.time}</small></div></div>;
 }
-function Projects({tasks,setPage,setSelectedTask,setShowCreate}) {
+function Projects({tasks,people,setPage,setSelectedTask,setShowCreate}) {
   const [tab,setTab]=useState("Board");
   const columns=["Pending","In Progress","Blocked","Completed"];
   const completed = tasks.filter(task => task.status === "Completed").length;
@@ -417,7 +461,7 @@ function TaskWorkspace({tasks,setSelectedTask,search,setSearch,statusFilter,setS
 function TaskTable({tasks,setSelectedTask}) {
   return <div className="task-table-wrap"><table className="task-table full-table"><thead><tr><th>TASK</th><th>ASSIGNEE</th><th>STATUS</th><th>PRIORITY</th><th>DUE DATE</th><th/></tr></thead><tbody>{tasks.map(t=><tr key={t.id} onClick={()=>setSelectedTask(t)}><td><div className="task-name-cell"><span className={`task-priority priority-${t.priority.toLowerCase()}`}/><div><strong>{t.title}</strong><small>{t.id} · {t.role}</small></div></div></td><td><div className="assignee-cell"><Avatar initials={t.initials} color={avatarColor(t.initials)} size="small"/><span>{t.assignee}</span></div></td><td><StatusPill status={t.status}/></td><td><span className={`priority-label priority-text-${t.priority.toLowerCase()}`}>{t.priority}</span></td><td><span className="due-date"><CalendarDays size={12}/>{t.dueDate}</span></td><td><button className="row-more" aria-label={`Open actions for ${t.title}`}><MoreHorizontal size={17} aria-hidden="true"/></button></td></tr>)}</tbody></table>{tasks.length===0&&<div className="empty-state" role="status"><Search size={23} aria-hidden="true"/><strong>No tasks match your filters</strong><p>Try another search or clear your filters.</p></div>}</div>;
 }
-function TeamMembers({tasks}) {
+function TeamMembers({tasks,people}) {
   const assignedTasks = tasks.filter(task => task.assignee && people.some(person => person.name === task.assignee));
   const unassignedTasks = tasks.filter(task => !task.assignee || !people.some(person => person.name === task.assignee)).length;
   const completedTasks = tasks.filter(task => task.status === "Completed").length;
@@ -426,15 +470,29 @@ function TeamMembers({tasks}) {
     <div className="invite-banner"><div className="invite-illustration"><Users size={21} aria-hidden="true"/><Plus size={12} aria-hidden="true"/></div><div><strong>Great work is a team sport.</strong><p>Bring everyone into the same workspace to keep work visible and blockers small.</p></div><button className="button button-secondary" onClick={()=>alert("Invitations will be enabled once the backend is connected.")}>Invite teammates <ArrowRight size={14} aria-hidden="true"/></button></div>
   </>;
 }
-function Coordinator({tasks,activity,enabled,setEnabled,setToast,addActivity}) {
+function Coordinator({tasks,activity,apiState,enabled,setEnabled,setToast,addActivity}) {
   const [tab,setTab]=useState("Follow-up queue");
   const [cadence,setCadence]=useState("Every 24 hours");
   const [quietHours,setQuietHours]=useState(true);
   const [autoStatus,setAutoStatus]=useState(true);
   const [messages,setMessages]=useState({});
   const pending=tasks.filter(t=>t.status!=="Completed");
-  function sendFollowup(task) {
-    setMessages(prev=>({...prev,[task.id]:true}));
+  async function sendFollowup(task) {
+    if (apiState === "connected") {
+      setMessages(prev=>({...prev,[task.id]:"sending"}));
+      try {
+        const result = await api.followUpTask(task.id);
+        if (result.status !== "sent") throw new Error("Backend did not confirm that the message was sent.");
+        setMessages(prev=>({...prev,[task.id]:"sent"}));
+        addActivity("Follow-up sent",`A Google Chat follow-up was sent for “${task.title}”.`,"bot");
+        setToast("Follow-up sent in Google Chat");
+      } catch (error) {
+        setMessages(prev=>{const next={...prev};delete next[task.id];return next;});
+        setToast(`Google Chat follow-up failed: ${error.message}`);
+      }
+      return;
+    }
+    setMessages(prev=>({...prev,[task.id]:"demo"}));
     addActivity("Follow-up queued",`A follow-up for “${task.title}” was queued in demo mode.`,"bot");
     setToast("Follow-up queued in demo mode");
   }
@@ -443,7 +501,7 @@ function Coordinator({tasks,activity,enabled,setEnabled,setToast,addActivity}) {
     <section className="agent-hero"><div className="agent-hero-main"><div className="agent-avatar" aria-hidden="true"><Bot size={26}/><span className={`agent-status-dot ${enabled?"":"paused"}`}/></div><div><div className="agent-title-row"><h2>Project Coordinator</h2><span className={`agent-status ${enabled?"":"paused"}`}><i/>{enabled?"Agent active":"Agent paused"}</span></div><p>Review blockers and prepare follow-ups from the task data already in this workspace.</p><div className="agent-capabilities"><span><Check size={13} aria-hidden="true"/> Follow-up queue</span><span><Check size={13} aria-hidden="true"/> Blocker detection</span><span><Check size={13} aria-hidden="true"/> Status interpretation</span></div></div></div><div className="agent-hero-controls"><span>Coordinator</span><button className={`toggle ${enabled?"on":""}`} onClick={()=>{setEnabled(!enabled);setToast(enabled?"AI coordinator paused":"AI coordinator resumed");}} aria-label={`${enabled?"Pause":"Resume"} AI coordinator`} aria-pressed={enabled}><i/></button></div></section>
     <div className="agent-stat-grid"><div className="panel agent-stat"><span className="agent-stat-icon purple" aria-hidden="true"><MessageCircle size={16}/></span><div><span>Tasks needing follow-up</span><strong>{Math.min(3,pending.length)}</strong><small>Based on open tasks</small></div></div><div className="panel agent-stat"><span className="agent-stat-icon orange" aria-hidden="true"><AlertCircle size={16}/></span><div><span>Open blockers</span><strong>{tasks.filter(t=>t.status==="Blocked").length}</strong><small>Require attention</small></div></div><div className="panel agent-stat"><span className="agent-stat-icon green" aria-hidden="true"><CheckCheck size={16}/></span><div><span>Activity entries</span><strong>{activity.length}</strong><small>Current demo feed</small></div></div><div className="panel agent-stat"><span className="agent-stat-icon blue" aria-hidden="true"><Zap size={16}/></span><div><span>Completed tasks</span><strong>{tasks.filter(t=>t.status==="Completed").length}</strong><small>From current task list</small></div></div></div>
     <div className="coordinator-layout"><section className="panel coordinator-main"><div className="panel-heading"><div><h3>Coordination workspace</h3><p>Choose a task to prepare a follow-up, or review coordinator activity.</p></div><span className="demo-badge"><span/> DEMO MODE</span></div><div className="tab-strip" role="tablist" aria-label="Coordinator workspace"><button role="tab" aria-selected={tab==="Follow-up queue"} className={tab==="Follow-up queue"?"selected":""} onClick={()=>setTab("Follow-up queue")}>Pending coordination</button><button role="tab" aria-selected={tab==="Recent decisions"} className={tab==="Recent decisions"?"selected":""} onClick={()=>setTab("Recent decisions")}>Recent activity</button></div>
-      {tab==="Follow-up queue"?(pending.length ? <div className="followup-list">{pending.slice(0,4).map((t,i)=><article className="followup-card" key={t.id}><div className="followup-card-top"><span className={`followup-priority ${t.status==="Blocked"?"urgent":i===0?"soon":"normal"}`}>{t.status==="Blocked"?"BLOCKER DETECTED":i===0?"FOLLOW-UP DUE":"CHECK-IN SCHEDULED"}</span><span className="followup-time"><Clock3 size={12} aria-hidden="true"/>{i===0?"Due now":i===1?"In 2 hours":"Tomorrow"}</span></div><div className="followup-task"><Avatar initials={t.initials} color={avatarColor(t.initials)} size="small"/><div><strong>{t.title}</strong><small>{t.assignee} · {t.id}</small></div><StatusPill status={t.status}/></div><div className="message-preview"><Bot size={15} aria-hidden="true"/><p>{t.status==="Blocked"?`Hey ${t.assignee.split(" ")[0]}, I noticed a blocker on “${t.title}”. What do you need to get moving again?`: `Hey ${t.assignee.split(" ")[0]}! Quick check-in on “${t.title}” — what’s the latest progress, and are you blocked on anything?`}</p></div><div className="followup-card-actions"><span className="explain-link"><CircleHelp size={13} aria-hidden="true"/> Based on task status</span><button className="button button-secondary button-sm" onClick={()=>sendFollowup(t)} disabled={messages[t.id]}>{messages[t.id]?<><Check size={13} aria-hidden="true"/> Queued in demo</>:<><Send size={13} aria-hidden="true"/> Queue follow-up</>}</button></div></article>)}</div> : <div className="coordinator-empty"><MessageCircle size={22} aria-hidden="true"/><strong>No open tasks need coordination</strong><p>The queue will reflect current task statuses when work is available.</p></div>) : (recentActivity.length ? <div className="decision-list">{recentActivity.map(a=><ActivityItem key={a.id} item={a}/>)}</div> : <div className="coordinator-empty"><Activity size={22} aria-hidden="true"/><strong>No coordinator activity yet</strong><p>Actions prepared in this demo session will appear here.</p></div>)}
+      {tab==="Follow-up queue"?(pending.length ? <div className="followup-list">{pending.slice(0,4).map((t,i)=><article className="followup-card" key={t.id}><div className="followup-card-top"><span className={`followup-priority ${t.status==="Blocked"?"urgent":i===0?"soon":"normal"}`}>{t.status==="Blocked"?"BLOCKER DETECTED":i===0?"FOLLOW-UP DUE":"CHECK-IN SCHEDULED"}</span><span className="followup-time"><Clock3 size={12} aria-hidden="true"/>{i===0?"Due now":i===1?"In 2 hours":"Tomorrow"}</span></div><div className="followup-task"><Avatar initials={t.initials} color={avatarColor(t.initials)} size="small"/><div><strong>{t.title}</strong><small>{t.assignee} · {t.id}</small></div><StatusPill status={t.status}/></div><div className="message-preview"><Bot size={15} aria-hidden="true"/><p>{t.status==="Blocked"?`Hey ${t.assignee.split(" ")[0]}, I noticed a blocker on “${t.title}”. What do you need to get moving again?`: `Hey ${t.assignee.split(" ")[0]}! Quick check-in on “${t.title}” — what’s the latest progress, and are you blocked on anything?`}</p></div><div className="followup-card-actions"><span className="explain-link"><CircleHelp size={13} aria-hidden="true"/> Based on task status</span><button className="button button-secondary button-sm" onClick={()=>sendFollowup(t)} disabled={Boolean(messages[t.id])}>{messages[t.id]==="sending"?<><Clock3 size={13} aria-hidden="true"/> Sending…</>:messages[t.id]==="sent"?<><Check size={13} aria-hidden="true"/> Sent</>:messages[t.id]==="demo"?<><Check size={13} aria-hidden="true"/> Queued in demo</>:<><Send size={13} aria-hidden="true"/> {apiState==="connected"?"Send follow-up":"Queue follow-up"}</>}</button></div></article>)}</div> : <div className="coordinator-empty"><MessageCircle size={22} aria-hidden="true"/><strong>No open tasks need coordination</strong><p>The queue will reflect current task statuses when work is available.</p></div>) : (recentActivity.length ? <div className="decision-list">{recentActivity.map(a=><ActivityItem key={a.id} item={a}/>)}</div> : <div className="coordinator-empty"><Activity size={22} aria-hidden="true"/><strong>No coordinator activity yet</strong><p>Actions prepared in this demo session will appear here.</p></div>)}
     </section><aside className="panel agent-settings"><div className="panel-heading"><div><h3>Coordinator controls</h3><p>Change how follow-ups are prepared in this session.</p></div><SlidersHorizontal size={17} aria-hidden="true"/></div><div className="setting-row"><div><strong>Automatic follow-ups</strong><p>Prepare reminders for stale tasks.</p></div><button className={`toggle ${enabled?"on":""}`} onClick={()=>setEnabled(!enabled)} aria-label={`${enabled?"Disable":"Enable"} automatic follow-ups`} aria-pressed={enabled}><i/></button></div><div className="setting-row"><div><strong>Auto-update task status</strong><p>Apply clear updates from replies.</p></div><button className={`toggle ${autoStatus?"on":""}`} onClick={()=>setAutoStatus(!autoStatus)} aria-label={`${autoStatus?"Disable":"Enable"} automatic task status updates`} aria-pressed={autoStatus}><i/></button></div><div className="setting-row"><div><strong>Respect quiet hours</strong><p>Avoid preparing late-night messages.</p></div><button className={`toggle ${quietHours?"on":""}`} onClick={()=>setQuietHours(!quietHours)} aria-label={`${quietHours?"Disable":"Enable"} quiet hours`} aria-pressed={quietHours}><i/></button></div><label className="field-label cadence-label">Follow-up cadence<select aria-label="Follow-up cadence" value={cadence} onChange={e=>setCadence(e.target.value)}><option>Every 12 hours</option><option>Every 24 hours</option><option>Every 48 hours</option><option>Every 3 days</option></select></label><div className="settings-note"><ShieldCheck size={15} aria-hidden="true"/><p>Suggestions are reviewed by frontend demo rules. No message is sent and no task data changes until backend integration is available.</p></div><button className="button button-primary full-button" onClick={()=>setToast("Agent preferences saved for this demo.")}>Save preferences</button></aside></div>
   </>;
 }

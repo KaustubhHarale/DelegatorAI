@@ -1,4 +1,4 @@
-// All frontend API calls live here. Set VITE_API_BASE_URL in .env when the backend is ready.
+// All frontend API calls live here.
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 async function request(path, options = {}) {
@@ -7,7 +7,14 @@ async function request(path, options = {}) {
     ...options,
   });
   if (!response.ok) {
-    const message = await response.text().catch(() => "");
+    const body = await response.text();
+    let message = body;
+    try {
+      const parsed = JSON.parse(body);
+      message = parsed.detail || body;
+    } catch {
+      // Keep the response body when the server did not return JSON.
+    }
     throw new Error(message || `API request failed (${response.status})`);
   }
   if (response.status === 204) return null;
@@ -15,6 +22,7 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  getParticipants: () => request("/participants"),
   getTasks: () => request("/tasks"),
   createTask: (task) => request("/tasks", { method: "POST", body: JSON.stringify(task) }),
   updateTask: (id, patch) => request(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),

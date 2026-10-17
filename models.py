@@ -11,6 +11,12 @@ class TaskStatus(StrEnum):
     COMPLETE = "Complete"
 
 
+class TaskPriority(StrEnum):
+    LOW = "Low"
+    MEDIUM = "Medium"
+    HIGH = "High"
+
+
 class InterpretationKind(StrEnum):
     PROGRESS = "progress"
     COMPLETION = "completion"
@@ -38,7 +44,9 @@ class Task(Schema):
     deadline: date
     completion_criteria: str
     status: TaskStatus = TaskStatus.PENDING
+    priority: TaskPriority = TaskPriority.MEDIUM
     blocker: str | None = None
+    progress: int = Field(default=0, ge=0, le=100)
     last_follow_up_at: datetime | None = None
 
 
