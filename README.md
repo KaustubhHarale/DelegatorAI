@@ -1,238 +1,198 @@
 # DelegatorAI
 
-DelegatorAI coordinates college project tasks. The foundation and AI milestones
-provide a FastAPI service, SQLite persistence, structured reply interpretation,
-validated task updates, and an audit trail. The Google Chat milestone adds
-authenticated HTTP events and Chat API messaging. A React + Vite dashboard
-prototype is included in `src/`.
+DelegatorAI is a project coordinator with a FastAPI backend, SQLite persistence,
+a React dashboard, Slack messaging, and NVIDIA-hosted GPT-OSS-20B. The
+dashboard reads persisted participants, tasks, and activity. The Slack app
+handles mapped project channels, threaded task updates, reminders, and
+coordinator questions.
 
-## Local setup
+## Local setup (Windows PowerShell)
 
-Requires Python 3.11 or newer.
+Requires Python 3.11 or newer and Node.js 18 or newer (Node.js 20 or newer is
+recommended).
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+npm install
 ```
 
-Configure NVIDIA's hosted GPT-OSS-20B in `.env`:
+Set `LLM_API_KEY` to your NVIDIA API key, and set `SLACK_BOT_TOKEN` and
+`SLACK_SIGNING_SECRET` in `.env`. `LLM_BASE_URL` and `LLM_MODEL` default to
+NVIDIA's OpenAI-compatible endpoint and GPT-OSS-20B. Set the Slack channel map
+after creating the app; an example is included in `.env.example`. Never commit
+`.env` or put secrets in `VITE_*` variables.
 
-```dotenv
-LLM_BASE_URL=https://integrate.api.nvidia.com/v1
-LLM_MODEL=openai/gpt-oss-20b
-LLM_API_KEY=YOUR_NVIDIA_API_KEY
-```
-
-Replace `YOUR_NVIDIA_API_KEY` with your NVIDIA API key. `LLM_API_KEY` is
-required; the application reports a clear error if it is missing. Do not commit
-`.env`, service-account credentials, or keys. `.env` is Git-ignored. Keep the
-NVIDIA base URL and model ID unchanged unless intentionally configuring a
-different compatible endpoint.
-
-Seed five simulated participants and sample tasks:
+Initialize an empty local database with safe sample records:
 
 ```powershell
 python seed.py
 ```
 
-The simulated participants do not have Google Chat user IDs, so they cannot
-receive or submit real Chat messages until you map their records to actual
-Google user resource names (for example `users/12345678901234567890`).
+Seeding uses insert-if-missing behavior. The sample project is `college-app`;
+seed participant IDs include `p-kabir`, `p-maya`, `p-anjali`, `p-rohan`, and
+`p-leena`.
 
-## Run the backend
+## Create and configure the Slack app
 
-```powershell
-uvicorn main:app --host 127.0.0.1 --port 8000
-```
+1. At <https://api.slack.com/apps>, choose **Create New App** and create an app
+   for the workspace where your project team works.
+2. Open **OAuth & Permissions** and add these bot token scopes:
+   - `chat:write` to send messages.
+   - `channels:history` to receive public-channel messages in subscribed
+     channels.
+   - `app_mentions:read` to receive bot mentions.
+   - Add `groups:history` only if you will map private channels.
+3. Open **Event Subscriptions**, enable events, and set the Request URL to
+   `https://YOUR_PUBLIC_HOST/slack/events`. Slack sends a signed URL-verification
+   challenge; the backend validates it and returns the challenge.
+4. Subscribe to the bot events `app_mention` and `message.channels`. Add
+   `message.groups` only for private project channels.
+5. Click **Install to Workspace** (or reinstall after changing scopes). Invite
+   the bot into each mapped channel. It does not request `chat:write.public`.
+6. From **OAuth & Permissions**, copy the **Bot User OAuth Token** (starts with
+   `xoxb-`). From **Basic Information → App Credentials**, copy the **Signing
+   Secret**. Keep both private.
+7. In the workspace, find the bot's Slack member ID (starts with `U` or `W`).
+   Configure it as `SLACK_BOT_USER_ID` when known. Find each participant's
+   member ID in their Slack profile.
+8. Edit `.env` with the app credentials, channel mapping, and admin IDs. The
+   mapping is **channel ID to project ID**, for example:
 
-- Health check: `GET http://127.0.0.1:8000/health`
-- Google Chat event handler: `POST /google-chat/events`
-
-The event handler validates Google's bearer ID token against `CHAT_AUDIENCE`,
-ignores unknown senders, spaces, or threads, and only processes messages in a
-tracked task thread from that task's configured owner. Original replies and
-status changes are stored in SQLite. Duplicate Google event IDs are ignored.
-Clarifications and acknowledgements are sent as actual Google Chat thread
-messages. LLM and Chat API calls require their own valid credentials; tests use
-fakes and do not contact either service.
-
-## Configure Google Chat in the existing Google Cloud project
-
-The app currently uses one HTTPS event URL for all configured Chat triggers:
-
-```text
-https://<your-public-host>/google-chat/events
-```
-
-`http://127.0.0.1:8000/google-chat/events` is only a local address; Google Chat
-cannot call it. The final public HTTPS URL depends on where the backend is
-hosted or which HTTPS tunnel you choose. Once selected, use that exact URL both
-as the Chat app's HTTP endpoint and as `CHAT_AUDIENCE` (including the path and
-trailing-slash choice).
-
-1. In Google Cloud Console, select the existing **DelegatorAI** project and
-   enable the **Google Chat API**.
-2. Open the Google Chat API configuration. Configure the app connection to use
-   the **HTTP endpoint URL** above, and select the matching HTTP endpoint URL
-   as the authentication audience. Add the `MESSAGE`, `ADDED_TO_SPACE`, and
-   `REMOVED_FROM_SPACE` event triggers to this same endpoint. Lifecycle events
-   receive an empty acknowledgement; task replies are handled on `MESSAGE`.
-3. Configure a service account for the Chat app's app authentication. Grant the
-   Chat app the `https://www.googleapis.com/auth/chat.bot` scope. For local
-   development, download its JSON key to a protected location outside this
-   repository. Do not commit that file. In production, prefer an attached
-   service identity over a downloaded key.
-4. Add the Google Chat app to each project space. Set `CHAT_PROJECT_SPACES` in
-   `.env` to a JSON map from task `project_id` to the Google Chat space resource
-   name, for example:
-
-   ```text
-   CHAT_PROJECT_SPACES={"college-app":"spaces/AAAA..."}
+   ```dotenv
+   SLACK_PROJECT_CHANNELS={"C0123456789":"college-app"}
+   SLACK_ADMIN_USER_IDS=U01234567
+   SLACK_BOT_USER_ID=U09876543
    ```
 
-5. Set these values in `.env`:
-   - `CHAT_AUDIENCE`: the exact public HTTPS URL configured in the Chat app.
-   - `CHAT_SERVICE_ACCOUNT_FILE`: path to the service account JSON file for
-     outbound Chat API calls.
-   - `CHAT_EXPECTED_SERVICE_ACCOUNT_EMAIL`: optionally pin the service account
-     email expected in Google's verified bearer token.
-   - `CHAT_PROJECT_SPACES`: JSON project-to-space mapping.
+   Copy a channel ID from that channel's details in Slack. Channel IDs must
+   correspond exactly to `project_id` values in the task database. Admin Slack
+   IDs in `SLACK_ADMIN_USER_IDS` may run the `link`, `create`, and `delegate`
+   commands by mentioning the bot in a mapped channel.
+9. Link task participants by mentioning the bot with
+   `link PARTICIPANT_ID SLACK_USER_ID` in a mapped channel as a configured
+   admin, for example `@DelegatorAI link p-kabir U12345678`.
+   The linked Slack user must be the task owner to update that task.
 
-   The backend verifies the Google-signed OIDC ID token's signature, issuer, and
-   audience. Do not disable that validation or replace it with a shared secret.
-6. Update each real participant record's `google_user_id` to the `users/...`
-   name Google provides in Chat events. It must match the actual task owner.
-   Seeded sample identities are not connected to real users.
-7. In the Google Chat API configuration, make the app available to the intended
-   test users, then send a real message in a task thread to test the full loop.
+If local `.env` edits are made while Uvicorn is running, restart Uvicorn so the
+process reloads the new settings.
 
-### Cloud Run demo deployment
+## Develop locally and test Slack
 
-This repository includes a Dockerfile for Cloud Run. The demo configuration
-keeps SQLite at `/tmp/delegatorai.db`: this is intentionally disposable data,
-not durable storage. Cloud Run can replace an instance or scale out, so tasks,
-messages, and audit history can disappear or diverge. Do not use this SQLite
-deployment for real participant coordination where updates must be retained.
-
-Install and authenticate the Google Cloud CLI, then set the project and region
-in PowerShell:
+Start the backend in one PowerShell terminal:
 
 ```powershell
-gcloud auth login
-gcloud config set project YOUR_PROJECT_ID
-$region = "YOUR_REGION"
-$project = "YOUR_PROJECT_ID"
+.\.venv\Scripts\Activate.ps1
+uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Enable the required APIs and create a runtime service account:
+Start the frontend in another terminal:
 
 ```powershell
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com `
-  secretmanager.googleapis.com chat.googleapis.com --project $project
-gcloud iam service-accounts create delegatorai-chat `
-  --project $project --display-name "DelegatorAI Chat API client"
-```
-
-Create a Secret Manager secret named `delegatorai-llm-key` in the Cloud Console,
-add a newly rotated NVIDIA key as its secret value, and grant the runtime
-service account `roles/secretmanager.secretAccessor` on that secret. Do not
-pass keys on the command line or commit them. Deploy from the repository root:
-
-```powershell
-$runtimeServiceAccount = "delegatorai-chat@$project.iam.gserviceaccount.com"
-gcloud run deploy delegatorai `
-  --source . `
-  --project $project `
-  --region $region `
-  --service-account $runtimeServiceAccount `
-  --allow-unauthenticated `
-  --max 1 `
-  --set-env-vars "DATABASE_PATH=/tmp/delegatorai.db,LLM_BASE_URL=https://integrate.api.nvidia.com/v1,LLM_MODEL=openai/gpt-oss-20b" `
-  --set-secrets "LLM_API_KEY=delegatorai-llm-key:latest"
-```
-
-`--allow-unauthenticated` lets Google Chat reach the HTTPS service. The app
-still rejects requests unless their bearer token is Google-signed and has the
-configured audience. Retrieve the actual Cloud Run service URL:
-
-```powershell
-$serviceUrl = gcloud run services describe delegatorai `
-  --project $project --region $region --format "value(status.url)"
-$chatEndpoint = "$serviceUrl/google-chat/events"
-Write-Output $chatEndpoint
-```
-
-Set `CHAT_AUDIENCE` to the exact `$chatEndpoint` value on the Cloud Run service,
-then select **Use a common HTTP endpoint URL for all triggers** in Google Chat
-API configuration and enter that same URL. If the **App home** trigger has its
-own URL field, use the same URL there; the endpoint responds to `APP_HOME`,
-`MESSAGE`, and lifecycle events. If the service URL changes, update both the
-Cloud Run `CHAT_AUDIENCE` setting and the Google Chat trigger URLs to match
-exactly.
-
-In the Chat API configuration, also set the generated Chat service account
-email as `CHAT_EXPECTED_SERVICE_ACCOUNT_EMAIL` when available. It has the form
-`service-PROJECT_NUMBER@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`. Set
-`CHAT_PROJECT_SPACES` to a JSON map of each task project's ID to its actual
-space resource name, and populate each real task owner's `google_user_id` with
-the user's `users/...` resource name. The runtime service account supplies
-Application Default Credentials for outbound Chat API calls; no downloaded
-service-account key file is required on Cloud Run.
-
-### HTTPS for local development
-
-Use an HTTPS tunnel or deploy the backend to an HTTPS host. Keep the tunnel
-running while Google Chat is configured and testing. Put the tunnel's HTTPS URL
-plus `/google-chat/events` in both the Chat app configuration and `CHAT_AUDIENCE`.
-Do not publish the SQLite file, `.env`, or service-account JSON through the
-tunnel. The Cloud Run demo deployment uses ephemeral SQLite and one maximum
-instance; it is not a durable production deployment.
-
-## Verify
-
-```powershell
-python -m pytest -q
-```
-
-The tests verify persistence, status rules, reply matching, ownership checks,
-event idempotency, and the HTTP endpoint's authentication guard. They do not
-prove that a Google Cloud project, Chat app, API key, or service account is
-configured, and they do not send a live Chat message.
-
-## Run the frontend
-
-Requires Node.js 18 or newer (Node.js 20 or newer is recommended).
-
-Install dependencies and start the React + Vite frontend:
-
-```powershell
-npm install
 npm run dev
 ```
 
-The sign-in screen is a UI demo and accepts any valid email and non-empty
-password. Authentication is not connected. The workspace uses local in-memory
-sample data; tasks reset when the page is refreshed.
+The frontend uses `VITE_API_BASE_URL` or defaults to
+`http://127.0.0.1:8000`. The backend allows localhost Vite origins by default;
+configure `FRONTEND_ORIGINS` for any other origin.
 
-## Backend connection
+Slack requires a public HTTPS URL to send events to a local machine. For
+development, start a tunnel such as ngrok in another terminal:
 
-The backend exposes the following endpoints:
+```powershell
+ngrok http 8000
+```
 
-- `GET /participants`
-- `GET /tasks`
-- `POST /tasks`
-- `PATCH /tasks/{id}`
-- `GET /tasks/{id}/history` (persisted message and status-history entries)
-- `POST /tasks/{id}/follow-up` (sends and records a Google Chat message)
+Copy the temporary HTTPS forwarding address from ngrok, append `/slack/events`,
+and enter that complete address as the Slack app's **Event Subscriptions**
+Request URL. The temporary address changes when the tunnel restarts; update the
+Slack Request URL then. Do not treat a development tunnel as a production URL.
+For deployment, use a stable HTTPS host and durable storage.
 
-Run the backend and frontend in separate terminals. The backend allows Vite's
-local development origins by default; set `FRONTEND_ORIGINS` to a
-comma-separated list to use other origins.
+For production, configure the same secrets and channel mapping as deployment
+environment variables (not a committed file), serve the API through HTTPS,
+disable Uvicorn reload mode, and monitor the `slack_events` table for records
+that reach `failed`. Keep SQLite on persistent storage and run a single
+application instance for this SQLite-backed worker. A local tunnel is for
+development only.
 
-The current frontend prototype is not connected to these endpoints and does
-not send Google Chat messages or call the LLM provider. Request helpers remain
-available in `src/api.js` for future integration. Do not put API keys or other
-secrets in `VITE_*` variables; keep NVIDIA and Google Chat credentials in the
-backend environment only.
+These are message commands, not registered Slack Slash Commands. In a mapped
+channel, mention the bot to invoke one. For example:
+
+- `@DelegatorAI help` or `@DelegatorAI start` for commands and setup guidance.
+- `@DelegatorAI tasks` to list your tasks in that project.
+- `@DelegatorAI task TASK_ID` to see one of your assigned tasks.
+- `@DelegatorAI report TASK_ID your update` to have the AI interpret and record progress,
+  blockers, or a clarification request.
+- Reply in a task's Slack thread to report progress. Only its linked owner can
+  change that task; ambiguous replies do not mark it complete.
+- Mention `@DelegatorAI` with a project question for a read-only summary.
+- `@DelegatorAI create title | participant_id | YYYY-MM-DD | completion criteria` as a
+  configured admin to create and assign a task to a linked participant.
+- `@DelegatorAI delegate a natural-language task request` as a configured admin to ask the
+  configured NVIDIA model to propose the title, criteria, due date, and a linked owner using
+  current project workload. The server validates the proposal before creating
+  the task; invalid proposals do not change project state.
+
+Task creation/assignment via `create` and `delegate` is an explicit admin action. The
+coordinator chat summarizes context but does not claim to take actions. For
+security, the Slack signature is checked against the raw request body and
+timestamp, event IDs are persisted before acknowledging Slack, and bot messages
+are ignored. Replies are posted in threads and use stable Slack message IDs on
+retries. Events that repeatedly fail are retained with a failed status for
+inspection in SQLite.
+
+## Dashboard API and persistence
+
+The sign-in page is a UI demo; authentication is not connected. The workspace
+uses the backend for task and participant data:
+
+- `GET /participants`, `GET /tasks`
+- `POST /tasks`, `PATCH /tasks/{id}`
+- `GET /tasks/{id}/history`
+- `POST /tasks/{id}/follow-up` sends a real Slack message in the mapped project
+  channel and persists it only after Slack accepts it.
+- `POST /assistant/chat` answers questions using current task context.
+
+SQLite stores project tasks, task audit history, accepted Slack events, and
+Slack conversation records. Keep the database on durable storage for
+production; do not use an ephemeral database or share a local SQLite file
+between multiple app instances. Existing Telegram and Google Chat history
+columns/tables are retained during this migration and are not used by the Slack
+worker.
+
+## Troubleshooting
+
+- **Slack shows “Your URL didn't respond with the value of the challenge”**:
+  ensure the Request URL ends in `/slack/events`, the backend is reachable, and
+  `SLACK_SIGNING_SECRET` is the signing secret for that same app.
+- **401 / invalid signature**: restart Uvicorn after changing `.env`, verify the
+  signing secret, and ensure a proxy or tunnel does not modify the raw request
+  body. Slack timestamps outside the five-minute replay window are rejected.
+- **No message or task update**: check that the event channel ID maps to the
+  intended project, the bot is a member of the channel, event subscriptions and
+  scopes match public/private channel use, and each task owner has a linked
+  Slack user ID.
+- **`not_in_channel`**: invite the bot to the mapped channel. Do not grant
+  `chat:write.public` as a workaround.
+- **429 / rate limited**: the worker honors Slack's `Retry-After` value and
+  retries the persisted event. Repeated failures remain in the
+  `slack_events` table.
+- **AI response unavailable**: check `LLM_API_KEY`, `LLM_BASE_URL`, and
+  `LLM_MODEL`. Missing configuration and provider errors are surfaced rather
+  than replaced with a simulated answer.
+- **Dashboard has no participants/tasks**: run `python seed.py`; it preserves
+  existing records.
+
+## Verification
+
+```powershell
+python -m pytest -q
+npm run build
+```
+
+Tests mock the Slack Web API and NVIDIA-backed provider; they do not require
+credentials or a real Slack workspace. Passing tests do not verify live Slack
+delivery or provider credentials.

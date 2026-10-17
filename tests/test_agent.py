@@ -92,6 +92,46 @@ def test_openai_compatible_provider_uses_nvidia_settings(monkeypatch):
     assert captured["request"]["model"] == "openai/gpt-oss-20b"
 
 
+def test_openai_compatible_provider_returns_plain_coordinator_response(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["request"] = kwargs
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="  Focus on the blocker.  ")
+                    )
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, *, base_url: str, api_key: str) -> None:
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(
+        "agent.get_llm_settings",
+        lambda: LLMSettings(
+            api_key="test-nvidia-key",
+            base_url="https://integrate.api.nvidia.com/v1",
+            model="openai/gpt-oss-20b",
+        ),
+    )
+    monkeypatch.setattr("agent.OpenAI", FakeOpenAI)
+    messages = [
+        {"role": "system", "content": "System"},
+        {"role": "user", "content": "Question"},
+    ]
+
+    result = OpenAICompatibleProvider().respond(messages)
+
+    assert result == "Focus on the blocker."
+    assert captured["request"]["messages"] == messages
+    assert "response_format" not in captured["request"]
+    assert captured["request"]["model"] == "openai/gpt-oss-20b"
+
+
 def test_openai_compatible_provider_rejects_empty_choices(monkeypatch):
     class FakeCompletions:
         def create(self, **kwargs):

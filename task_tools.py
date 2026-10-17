@@ -134,6 +134,9 @@ def record_progress(
     reply: str,
     interpretation: TaskInterpretation,
     event_id: str | None = None,
+    slack_channel_id: str | None = None,
+    slack_message_ts: str | None = None,
+    slack_thread_ts: str | None = None,
     database_path: Path | str | None = None,
 ) -> Task:
     if not reply.strip():
@@ -161,10 +164,20 @@ def record_progress(
         cursor = connection.execute(
             """
             INSERT INTO messages (
-                event_id, task_id, participant_id, direction, text, created_at
-            ) VALUES (?, ?, ?, 'inbound', ?, ?)
+                event_id, task_id, participant_id, direction, text, created_at,
+                slack_channel_id, slack_message_ts, slack_thread_ts
+            ) VALUES (?, ?, ?, 'inbound', ?, ?, ?, ?, ?)
             """,
-            (message_event_id, task_id, participant_id, reply, created_at),
+            (
+                message_event_id,
+                task_id,
+                participant_id,
+                reply,
+                created_at,
+                slack_channel_id,
+                slack_message_ts,
+                slack_thread_ts,
+            ),
         )
         new_blocker = (
             interpretation.blocker or task.blocker

@@ -33,7 +33,7 @@ const features = [
     number: "03",
     title: "Stay in sync",
     description:
-      "Track progress in your workspace and receive Telegram updates when configured.",
+      "Track progress in your workspace and receive Slack updates when configured.",
     icon: Send,
   },
 ];
@@ -133,11 +133,11 @@ export default function LandingPage({ onGetStarted }) {
             </div>
           </div>
 
-          <div className="floating-card telegram-card">
-            <span className="telegram-symbol"><Send size={17} /></span>
+          <div className="floating-card slack-card">
+            <span className="slack-symbol"><Send size={17} /></span>
             <div>
               <strong>Team notifications</strong>
-              <p>Telegram · when connected</p>
+              <p>Slack · when connected</p>
             </div>
           </div>
         </div>

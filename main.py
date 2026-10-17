@@ -1,43 +1,66 @@
+import asyncio
+import json
+import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import date
 import os
-from typing import AsyncIterator, Literal
+from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from google.auth.exceptions import GoogleAuthError
-from googleapiclient.errors import Error as GoogleApiError
-from httplib2 import HttpLib2Error
+from openai import APIError
 from pydantic import BaseModel, ConfigDict, Field
 
-from config import get_google_chat_settings
+from agent import COORDINATOR_SYSTEM_PROMPT, OpenAICompatibleProvider
+from config import get_slack_settings
 from database import (
     add_task,
+    claim_slack_event,
+    complete_slack_event,
     connect,
+    enqueue_slack_event,
+    fail_slack_event,
     get_task,
     init_db,
     list_participants,
     list_task_history,
     list_tasks,
+    store_slack_event_response,
 )
-from google_chat import (
-    process_google_chat_event,
-    send_chat_message,
-    verify_google_chat_token,
-)
-from models import GoogleChatEvent, Participant, Task, TaskPriority, TaskStatus
+from models import Participant, Task, TaskPriority, TaskStatus
 from task_tools import (
     InvalidStatusTransitionError,
     TaskNotFoundError,
     update_task_from_dashboard,
 )
+from slack_bot import (
+    SlackApiError,
+    SlackClient,
+    SlackRateLimitError,
+    SlackReply,
+    process_slack_event,
+    send_slack_follow_up,
+    send_slack_reply,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     init_db()
-    yield
+    worker = asyncio.create_task(_slack_event_worker())
+    try:
+        yield
+    finally:
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="DelegatorAI", lifespan=lifespan)
@@ -76,6 +99,20 @@ class DashboardTaskUpdate(BaseModel):
     status: str | None = None
     blocker: str | None = Field(default=None, max_length=1000)
     progress: int | None = Field(default=None, ge=0, le=100)
+
+
+class CoordinatorChatTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class CoordinatorChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=2000)
+    history: list[CoordinatorChatTurn] = Field(default_factory=list, max_length=12)
 
 
 @app.get("/participants")
@@ -178,11 +215,17 @@ def dashboard_task_history(task_id: str) -> list[dict[str, object]]:
         else:
             direction = row["direction"]
             kind = "bot" if direction == "outbound" else "update"
-            title = (
-                "Google Chat follow-up sent"
-                if direction == "outbound"
-                else "Google Chat reply received"
+            provider = (
+                "Slack"
+                if row["slack_channel_id"]
+                else "Telegram"
+                if row["telegram_chat_id"]
+                else "Google Chat"
+                if row["chat_space_id"]
+                else "Task"
             )
+            action = "follow-up sent" if direction == "outbound" else "update received"
+            title = f"{provider} {action}"
             detail = row["text"]
         history.append(
             {
@@ -197,6 +240,9 @@ def dashboard_task_history(task_id: str) -> list[dict[str, object]]:
                 "new_status": row["new_status"],
                 "message_name": row["chat_message_name"],
                 "thread_name": row["chat_thread_name"],
+                "channel_id": row["slack_channel_id"],
+                "message_ts": row["slack_message_ts"],
+                "thread_ts": row["slack_thread_ts"],
             }
         )
     return history
@@ -216,45 +262,83 @@ def dashboard_task_follow_up(task_id: str) -> dict[str, str | None]:
             status_code=503, detail=f"Owner {task.owner_id!r} is not configured."
         )
     try:
-        settings = get_google_chat_settings()
+        settings = get_slack_settings()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    text = (
-        f"Hi {owner.name}, quick check-in on “{task.title}” "
-        f"(currently {task.status.value}). How is it progressing? "
-        "Please share an update and let us know if you’re blocked."
-    )
     try:
-        receipt = send_chat_message(
+        receipt = send_slack_follow_up(
             task_id=task_id,
-            text=text,
             settings=settings,
         )
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except GoogleAuthError as exc:
+    except SlackRateLimitError as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"Google Chat credentials are unavailable: {exc}",
+            detail=f"Slack rate limited the request; retry after {exc.retry_after} seconds.",
         ) from exc
-    except (OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Google Chat configuration or credentials are invalid: {exc}",
-        ) from exc
-    except (GoogleApiError, HttpLib2Error) as exc:
+    except SlackApiError as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Google Chat could not deliver the follow-up: {exc}",
+            detail="Slack could not deliver the follow-up.",
         ) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "status": "sent",
         "task_id": task_id,
-        "message_name": receipt.message_name,
-        "thread_name": receipt.thread_name,
+        "message_ts": receipt.message_ts,
+        "channel_id": receipt.channel_id,
+        "thread_ts": receipt.thread_ts,
     }
+
+
+@app.post("/assistant/chat")
+def coordinator_chat(request: CoordinatorChatRequest) -> dict[str, str]:
+    participants = {person.id: person.name for person in list_participants()}
+    context = [
+        {
+            "id": task.id,
+            "title": task.title,
+            "project": task.project_id,
+            "assignee": participants.get(task.owner_id, task.owner_id),
+            "status": task.status.value,
+            "priority": task.priority.value,
+            "deadline": task.deadline.isoformat(),
+            "progress": task.progress,
+            "blocker": task.blocker,
+        }
+        for task in list_tasks()
+    ]
+    messages = [
+        {"role": "system", "content": COORDINATOR_SYSTEM_PROMPT},
+        *[
+            {"role": turn.role, "content": turn.content}
+            for turn in request.history
+        ],
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "task_context_untrusted": context,
+                    "user_message_untrusted": request.message,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    try:
+        reply = OpenAICompatibleProvider().respond(messages)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (APIError, ValueError) as exc:
+        logger.error(
+            "Coordinator chat request failed (%s).", type(exc).__name__
+        )
+        raise HTTPException(
+            status_code=502, detail="The AI coordinator could not respond."
+        ) from exc
+    return {"reply": reply}
 
 
 @app.get("/health")
@@ -304,64 +388,144 @@ def _parse_dashboard_status(status: str | None) -> TaskStatus | None:
         ) from exc
 
 
-@app.post("/google-chat/events")
-def google_chat_events(
-    event: GoogleChatEvent,
-    authorization: str | None = Header(default=None),
-) -> dict[str, object]:
-    if not authorization:
-        raise HTTPException(
-            status_code=401,
-            detail="A Google Chat bearer token is required.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        raise HTTPException(
-            status_code=401,
-            detail="A Google Chat bearer token is required.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+@app.post("/slack/events")
+async def slack_events(
+    request: Request,
+    timestamp: str | None = Header(default=None, alias="X-Slack-Request-Timestamp"),
+    signature: str | None = Header(default=None, alias="X-Slack-Signature"),
+) -> dict[str, str | bool]:
     try:
-        settings = get_google_chat_settings()
+        settings = get_slack_settings()
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.error("Slack integration configuration is invalid (%s).", type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="Slack integration is not configured."
+        ) from exc
+
+    raw_body = await request.body()
+    from slack_bot import verify_slack_signature
+
+    if not verify_slack_signature(
+        signing_secret=settings.signing_secret,
+        timestamp=timestamp,
+        signature=signature,
+        raw_body=raw_body,
+    ):
+        raise HTTPException(status_code=401, detail="Invalid Slack request signature.")
     try:
-        verify_google_chat_token(
-            token.strip(),
-            settings=settings,
+        payload = json.loads(raw_body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=400, detail="Slack request body must be JSON."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400, detail="Slack request body must be a JSON object."
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Invalid Google Chat token.") from exc
+    if payload.get("type") == "url_verification":
+        challenge = payload.get("challenge")
+        if not isinstance(challenge, str) or not challenge:
+            raise HTTPException(status_code=400, detail="Slack challenge is missing.")
+        return {"challenge": challenge}
+    if payload.get("type") != "event_callback":
+        return {"ok": True}
+    event_id = payload.get("event_id")
+    if (
+        not isinstance(event_id, str)
+        or not event_id
+        or not isinstance(payload.get("event"), dict)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="A valid Slack event_id and event object are required.",
+        )
+    inserted = await asyncio.to_thread(enqueue_slack_event, event_id, payload)
+    logger.info(
+        "Accepted Slack event (event_id=%s, duplicate=%s).",
+        event_id,
+        not inserted,
+    )
+    return {"ok": True, "queued": inserted}
 
-    if event.type == "APP_HOME":
-        return {
-            "action": {
-                "navigations": [
-                    {
-                        "pushCard": {
-                            "header": {"title": "DelegatorAI"},
-                            "sections": [
-                                {
-                                    "widgets": [
-                                        {
-                                            "textParagraph": {
-                                                "text": (
-                                                    "Task coordination happens in "
-                                                    "your project space. Reply in a "
-                                                    "task follow-up thread to share "
-                                                    "progress or report a blocker."
-                                                )
-                                            }
-                                        }
-                                    ]
-                                }
-                            ],
-                        }
-                    }
-                ]
-            }
-        }
 
-    process_google_chat_event(event, settings=settings)
-    return {}
+async def _slack_event_worker() -> None:
+    while True:
+        try:
+            event_row = await asyncio.to_thread(claim_slack_event)
+            if event_row is None:
+                await asyncio.sleep(1)
+                continue
+            event_id = event_row["event_id"]
+            try:
+                settings = get_slack_settings()
+                payload = json.loads(event_row["payload"])
+                if not isinstance(payload, dict) or not isinstance(payload.get("event"), dict):
+                    raise ValueError("Queued Slack event is malformed.")
+                if event_row["response_text"] is None:
+                    reply = await asyncio.to_thread(
+                        lambda: process_slack_event(
+                            payload["event"],
+                            event_id=event_id,
+                            settings=settings,
+                        )
+                    )
+                    if reply is not None:
+                        await asyncio.to_thread(
+                            store_slack_event_response,
+                            event_id=event_id,
+                            text=reply.text,
+                            channel_id=reply.channel_id,
+                            thread_ts=reply.thread_ts,
+                            task_id=reply.task_id,
+                            participant_id=reply.participant_id,
+                        )
+                else:
+                    project_id = settings.project_channels.get(
+                        str(payload.get("event", {}).get("channel", ""))
+                    )
+                    if project_id is None:
+                        raise ValueError("Queued Slack event channel is not mapped.")
+                    reply = SlackReply(
+                        text=event_row["response_text"],
+                        channel_id=event_row["response_channel_id"],
+                        thread_ts=event_row["response_thread_ts"],
+                        project_id=project_id,
+                        task_id=event_row["response_task_id"],
+                        participant_id=event_row["response_participant_id"],
+                    )
+                if reply is not None:
+                    await asyncio.to_thread(
+                        send_slack_reply,
+                        event_id=event_id,
+                        reply=reply,
+                        client=SlackClient.from_settings(settings),
+                    )
+                await asyncio.to_thread(complete_slack_event, event_id)
+            except SlackRateLimitError as exc:
+                logger.warning(
+                    "Slack rate limit while processing event (event_id=%s, retry_after=%s).",
+                    event_id,
+                    exc.retry_after,
+                )
+                await asyncio.to_thread(
+                    fail_slack_event,
+                    event_id,
+                    event_row["attempts"] + 1,
+                    exc.retry_after,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Slack event processing failed (event_id=%s, error=%s).",
+                    event_id,
+                    type(exc).__name__,
+                )
+                await asyncio.to_thread(
+                    fail_slack_event,
+                    event_id,
+                    event_row["attempts"] + 1,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Slack event queue worker failed (%s).", type(exc).__name__)
+            await asyncio.sleep(1)

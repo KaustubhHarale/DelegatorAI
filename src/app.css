@@ -117,7 +117,7 @@ input:focus-visible {
 
 .landing .mini-icon,
 .landing .feature-icon,
-.landing .telegram-symbol {
+.landing .slack-symbol {
   color: #222;
   background: #f0f0f0;
 }
@@ -125,7 +125,7 @@ input:focus-visible {
 .landing .mini-label,
 .landing .task-person,
 .landing .update-card p,
-.landing .telegram-card p,
+.landing .slack-card p,
 .landing .feature-number,
 .landing .workflow-steps > div {
   color: #737373;
@@ -1192,11 +1192,214 @@ input:focus-visible {
   margin-left: auto;
 }
 
+.preview-badge.connected {
+  color: #245a37;
+  background: #e8f4eb;
+}
+
+.backend-state {
+  color: #777;
+  font-size: 10px;
+}
+
+.backend-state.connected {
+  color: #245a37;
+}
+
+.backend-state.error {
+  color: #a23b32;
+}
+
+.workspace-error,
+.coordinator-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #f0c8c4;
+  border-radius: 7px;
+  color: #8c2f28;
+  background: #fff5f4;
+  font-size: 11px;
+}
+
+.workspace-empty-info {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid #e8dfc4;
+  border-radius: 7px;
+  color: #67552b;
+  background: #fffaf0;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.workspace-empty-info code {
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: #333;
+  background: #f2ead8;
+}
+
+.page-panel {
+  overflow: hidden;
+}
+
+.page-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 0 18px 14px;
+}
+
+.filter-chip {
+  padding: 6px 9px;
+  border: 1px solid #e6e6e6;
+  border-radius: 6px;
+  color: #666;
+  background: #fff;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.filter-chip.selected {
+  border-color: #222;
+  color: #fff;
+  background: #222;
+}
+
+.page-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.project-card {
+  padding: 18px;
+}
+
+.project-card-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  margin-bottom: 17px;
+  place-items: center;
+  border-radius: 9px;
+  color: #222;
+  background: #eee;
+}
+
+.project-card h2 {
+  margin: 7px 0;
+  font-size: 16px;
+}
+
+.project-card > p {
+  margin: 0 0 17px;
+  color: #777;
+  font-size: 10px;
+}
+
+.project-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #eee;
+}
+
+.project-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #222;
+}
+
+.project-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 13px;
+  color: #777;
+  font-size: 9px;
+}
+
+.project-card-footer button,
+.team-member-card > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  color: #222;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.team-directory {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 11px;
+  padding: 0 18px 18px;
+}
+
+.team-member-card {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid #eee;
+  border-radius: 8px;
+}
+
+.team-member-card > .avatar {
+  width: 36px;
+  height: 36px;
+}
+
+.team-member-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.team-member-details h3 {
+  margin: 0 0 3px;
+  color: #333;
+  font-size: 11px;
+}
+
+.team-member-details p,
+.team-member-details small {
+  display: block;
+  overflow: hidden;
+  margin: 0;
+  color: #888;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-member-details small {
+  margin-top: 5px;
+  color: #555;
+}
+
+.coordinator-chat {
+  display: flex;
+  flex-direction: column;
+  max-height: 280px;
+  gap: 3px;
+  margin: 15px 0;
+  overflow-y: auto;
+}
+
 .coordinator-message {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin: 17px 0;
+  width: fit-content;
+  max-width: min(88%, 720px);
+  margin: 2px 0;
   padding: 12px;
   border-radius: 8px;
   color: #555;
@@ -1205,9 +1408,29 @@ input:focus-visible {
   line-height: 1.6;
 }
 
+.coordinator-message.user {
+  align-self: flex-end;
+  color: #fff;
+  background: #222;
+}
+
+.coordinator-message.assistant {
+  align-self: flex-start;
+}
+
 .coordinator-message svg {
   flex: 0 0 auto;
   color: #222;
+}
+
+.coordinator-message.user svg {
+  color: #fff;
+}
+
+.coordinator-typing {
+  margin: 5px 12px;
+  color: #777;
+  font-size: 10px;
 }
 
 .coordinator-input {
@@ -1222,6 +1445,16 @@ input:focus-visible {
   font-size: 10px;
 }
 
+.coordinator-input input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: #222;
+  background: transparent;
+  font-size: 11px;
+}
+
 .coordinator-input button {
   display: grid;
   width: 29px;
@@ -1231,6 +1464,12 @@ input:focus-visible {
   border-radius: 6px;
   color: #fff;
   background: #111;
+  cursor: pointer;
+}
+
+.coordinator-input button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .coordinator-disclaimer {
@@ -1283,12 +1522,24 @@ input:focus-visible {
   font-size: 10px;
 }
 
-.create-modal > input {
+.create-modal > input,
+.create-modal > select,
+.create-modal > textarea {
   height: 40px;
+  margin-bottom: 13px;
   padding: 0 10px;
   border: 1px solid #ddd;
   border-radius: 7px;
+  color: #222;
+  background: #fff;
   font-size: 11px;
+}
+
+.create-modal > textarea {
+  height: auto;
+  min-height: 64px;
+  padding: 9px 10px;
+  resize: vertical;
 }
 
 .modal-actions {

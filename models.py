@@ -34,6 +34,8 @@ class Participant(Schema):
     name: str
     google_user_id: str | None = None
     email: str | None = None
+    telegram_user_id: str | None = None
+    slack_user_id: str | None = None
 
 
 class Task(Schema):
@@ -75,42 +77,3 @@ class TaskInterpretation(Schema):
             if self.proposed_status != TaskStatus.BLOCKED or not self.blocker:
                 raise ValueError("Blocker interpretations must identify a blocker.")
         return self
-
-
-class GoogleChatUser(Schema):
-    model_config = ConfigDict(extra="ignore")
-
-    name: str
-    displayName: str | None = None
-    type: str | None = None
-
-
-class GoogleChatSpace(Schema):
-    model_config = ConfigDict(extra="ignore")
-
-    name: str
-
-
-class GoogleChatThread(Schema):
-    model_config = ConfigDict(extra="ignore")
-
-    name: str | None = None
-    threadKey: str | None = None
-
-
-class GoogleChatMessage(Schema):
-    model_config = ConfigDict(extra="ignore")
-
-    name: str | None = None
-    text: str = ""
-    sender: GoogleChatUser
-    space: GoogleChatSpace
-    thread: GoogleChatThread | None = None
-
-
-class GoogleChatEvent(Schema):
-    model_config = ConfigDict(extra="allow")
-
-    type: str
-    eventId: str | None = None
-    message: GoogleChatMessage | None = None

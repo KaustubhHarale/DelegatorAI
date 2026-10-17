@@ -1,11 +1,21 @@
 // All frontend API calls live here.
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(
+        `Cannot reach the backend at ${API_BASE}. Start the FastAPI server and check that FRONTEND_ORIGINS allows this frontend's origin.`,
+      );
+    }
+    throw error;
+  }
   if (!response.ok) {
     const body = await response.text();
     let message = body;
@@ -28,6 +38,10 @@ export const api = {
   updateTask: (id, patch) => request(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   getTaskHistory: (id) => request(`/tasks/${id}/history`),
   followUpTask: (id) => request(`/tasks/${id}/follow-up`, { method: "POST" }),
+  chatWithCoordinator: (message, history = []) => request("/assistant/chat", {
+    method: "POST",
+    body: JSON.stringify({ message, history }),
+  }),
 };
 
 export { API_BASE };

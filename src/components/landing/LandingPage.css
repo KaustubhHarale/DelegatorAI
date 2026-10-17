@@ -82,15 +82,15 @@
 .mini-card-top { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; }
 .mini-icon, .feature-icon { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 8px; color: var(--accent); background: rgba(165,166,255,.12); }
 .mini-label { color: #8c90a7; font-size: 8px; letter-spacing: 1.2px; }
-.task-card > strong, .update-card strong, .telegram-card strong { display: block; font-size: 12px; font-weight: 600; }
+.task-card > strong, .update-card strong, .slack-card strong { display: block; font-size: 12px; font-weight: 600; }
 .task-person { display: flex; align-items: center; gap: 7px; margin-top: 15px; color: #a3a6b8; font-size: 9px; }
 .avatar { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 50%; color: #171827; background: #c4b5fd; }
 .task-state { margin-left: auto; color: #a5a6ff; font-size: 8px; }
 .update-card { bottom: 16%; left: 0; display: flex; align-items: flex-start; gap: 11px; animation-delay: -2s; }
 .update-card .update-dot { margin-top: 4px; }
-.update-card p, .telegram-card p { margin: 7px 0 0; color: #999daf; font-size: 10px; }
-.telegram-card { right: 1%; bottom: 1%; display: flex; align-items: center; gap: 11px; animation-delay: -3.5s; }
-.telegram-symbol { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; color: #c0c1ff; background: rgba(165,166,255,.12); }
+.update-card p, .slack-card p { margin: 7px 0 0; color: #999daf; font-size: 10px; }
+.slack-card { right: 1%; bottom: 1%; display: flex; align-items: center; gap: 11px; animation-delay: -3.5s; }
+.slack-symbol { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; color: #c0c1ff; background: rgba(165,166,255,.12); }
 .features-section, .workflow-section, .closing-cta { max-width: 1200px; margin: auto; padding: 90px 32px; }
 .features-section { border-top: 1px solid var(--border); }
 .section-heading { max-width: 580px; margin-bottom: 35px; }
@@ -146,7 +146,7 @@
   .visual-stage { min-height: 345px; transform: scale(.9); transform-origin: center; margin: -5px -10px; }
   .task-card { right: -1%; width: 220px; }
   .update-card { left: -1%; }
-  .telegram-card { right: -1%; bottom: -1%; }
+  .slack-card { right: -1%; bottom: -1%; }
   .features-section, .workflow-section { padding: 65px 21px; }
   .feature-grid { grid-template-columns: 1fr; }
   .feature-card { padding: 22px; }
