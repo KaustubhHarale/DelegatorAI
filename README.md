@@ -205,20 +205,20 @@ configured, and they do not send a live Chat message.
 
 Requires Node.js 18 or newer (Node.js 20 or newer is recommended).
 
-Install dependencies and start the React + Vite dashboard:
+Install dependencies and start the React + Vite frontend:
 
 ```powershell
 npm install
 npm run dev
 ```
 
+The sign-in screen is a UI demo and accepts any valid email and non-empty
+password. Authentication is not connected. The workspace uses local in-memory
+sample data; tasks reset when the page is refreshed.
+
 ## Backend connection
 
-The frontend uses `VITE_API_BASE_URL` from `.env`, defaulting to
-`http://localhost:8000`. Run the backend and frontend in separate terminals.
-The backend allows Vite's local development origins by default; set
-`FRONTEND_ORIGINS` to a comma-separated list to use other origins. The dashboard
-uses these endpoints:
+The backend exposes the following endpoints:
 
 - `GET /participants`
 - `GET /tasks`
@@ -227,14 +227,12 @@ uses these endpoints:
 - `GET /tasks/{id}/history` (persisted message and status-history entries)
 - `POST /tasks/{id}/follow-up` (sends and records a Google Chat message)
 
-Copy `.env.example` to `.env` if needed, then set `VITE_API_BASE_URL` to your
-backend URL. Do not put API keys or other secrets in `VITE_*` variables: Vite
-exposes those values to browser code. Keep NVIDIA and Google Chat credentials
-in the backend environment only.
+Run the backend and frontend in separate terminals. The backend allows Vite's
+local development origins by default; set `FRONTEND_ORIGINS` to a
+comma-separated list to use other origins.
 
-The dashboard remains usable with sample demo data if the backend is
-unavailable. It does not send Google Chat messages or call the LLM provider
-directly. Live follow-ups require valid Google Chat configuration, credentials,
-a configured project space, and an owner with a Google Chat user ID. The API
-response adapter is in `src/App.jsx` (`normalizeTask`); request helpers are in
-`src/api.js`.
+The current frontend prototype is not connected to these endpoints and does
+not send Google Chat messages or call the LLM provider. Request helpers remain
+available in `src/api.js` for future integration. Do not put API keys or other
+secrets in `VITE_*` variables; keep NVIDIA and Google Chat credentials in the
+backend environment only.
